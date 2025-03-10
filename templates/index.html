@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Real-Time Captions</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+        }
+        .captions {
+            font-size: 24px;
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            width: 80%;
+            margin: auto;
+        }
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 250px;
+            background-color: black;
+            color: #fff;
+            text-align: center;
+            padding: 5px;
+            border-radius: 5px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -125px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+        .calm { color: blue; }
+        .excited { color: green; }
+        .emphasized { color: red; }
+    </style>
+</head>
+<body>
+
+    <h1>Real-Time Captions with IntelliSense</h1>
+    <button onclick="startTranscription()">Start Transcription</button>
+    
+    <div class="captions" id="captions"></div>
+
+    <script>
+        var socket = io.connect("http://localhost:5001");
+
+        function startTranscription() {
+            // Clear the captions div before starting a new transcription
+            document.getElementById("captions").innerHTML = "";
+            socket.emit("start_transcription");
+        }
+
+        socket.on("update_caption", function(data) {
+            // Append the new word to the captions div
+            document.getElementById("captions").innerHTML += " " + data.word;
+        });
+    </script>
+
+</body>
+</html>
