@@ -2,41 +2,35 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Real-Time Captions</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Transcription</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 20px;
+            margin: 20px;
         }
-        .captions {
-            font-size: 24px;
+        #caption {
+            font-size: 1.5em;
             margin-top: 20px;
-            padding: 10px;
-            border: 1px solid #ccc;
-            width: 80%;
-            margin: auto;
         }
         .tooltip {
             position: relative;
             display: inline-block;
-            cursor: pointer;
-            font-weight: bold;
+            border-bottom: 1px dotted black;
         }
         .tooltip .tooltiptext {
             visibility: hidden;
-            width: 250px;
+            width: 120px;
             background-color: black;
             color: #fff;
             text-align: center;
+            border-radius: 6px;
             padding: 5px;
-            border-radius: 5px;
             position: absolute;
             z-index: 1;
             bottom: 125%;
             left: 50%;
-            margin-left: -125px;
+            margin-left: -60px;
             opacity: 0;
             transition: opacity 0.3s;
         }
@@ -44,32 +38,26 @@
             visibility: visible;
             opacity: 1;
         }
-        .calm { color: blue; }
-        .excited { color: green; }
-        .emphasized { color: red; }
     </style>
 </head>
 <body>
+    <h1>Real-Time Transcription</h1>
+    <button id="startButton">Start Transcription</button>
+    <div id="caption"></div>
 
-    <h1>Real-Time Captions with IntelliSense</h1>
-    <button onclick="startTranscription()">Start Transcription</button>
-    
-    <div class="captions" id="captions"></div>
-
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
     <script>
-        var socket = io.connect("http://localhost:5001");
+        const socket = io();
 
-        function startTranscription() {
-            // Clear the captions div before starting a new transcription
-            document.getElementById("captions").innerHTML = "";
-            socket.emit("start_transcription");
-        }
-
+        // Update captions in real-time
         socket.on("update_caption", function(data) {
-            // Append the new word to the captions div
-            document.getElementById("captions").innerHTML += " " + data.word;
+            document.getElementById("caption").innerHTML = data.word;
+        });
+
+        // Start transcription when the button is clicked
+        document.getElementById("startButton").addEventListener("click", function() {
+            socket.emit("start_transcription");
         });
     </script>
-
 </body>
 </html>

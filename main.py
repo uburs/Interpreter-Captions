@@ -1,8 +1,4 @@
 import whisper
-import subprocess
-import pandas as pd
-import openai
-import os
 import torch
 import eventlet
 from flask import Flask, render_template
@@ -11,118 +7,98 @@ from flask_socketio import SocketIO
 from pydub import AudioSegment
 from pydub.utils import make_chunks
 import numpy as np
-import librosa  # Add librosa for pitch detection
+import librosa
+import os
 
-# Set OpenAI API Key Here
-OPENAI_API_KEY = ""
-
-if not OPENAI_API_KEY:
-    raise ValueError("Error: OpenAI API key is missing! Set it in main.py.")
-
-client = openai.OpenAI(api_key=OPENAI_API_KEY)
+# Apply eventlet monkey patch for better WebSocket performance
+eventlet.monkey_patch()
 
 # Initialize Flask App and WebSockets
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
-socketio = SocketIO(app, cors_allowed_origins="*")  # Allow all origins for Socket.IO
+CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Load Whisper Model
-model = whisper.load_model("medium")
-
-def convert_to_wav(audio_path):
-    """ Converts an audio file to WAV format if necessary """
-    if not audio_path.endswith(".wav"):
-        sound = AudioSegment.from_file(audio_path)
-        wav_path = audio_path.replace(".mp3", ".wav")
-        sound.export(wav_path, format="wav")
-        return wav_path
-    return audio_path
+# Load Whisper Model (using "base" for faster transcription)
+model = whisper.load_model("base")
 
 def analyze_audio(audio_chunk):
-    """ Analyzes loudness and pitch using librosa """
-    # Export the chunk to a temporary WAV file
+    """ Analyzes loudness and pitch using librosa with improved accuracy """
     chunk_name = "temp_chunk.wav"
     audio_chunk.export(chunk_name, format="wav")
     
-    # Load the audio file using librosa
     y, sr = librosa.load(chunk_name, sr=None)
-    
-    # Calculate loudness (RMS energy)
-    rms_energy = librosa.feature.rms(y=y).mean()
-    
-    # Extract pitch using librosa's piptrack
-    pitches, magnitudes = librosa.core.piptrack(y=y, sr=sr)
-    pitch = np.max(pitches) if np.any(pitches) else 150  # Default pitch if no pitch detected
-    
-    # Clean up the temporary file
     os.remove(chunk_name)
     
-    return rms_energy, pitch
+    # Calculate loudness (RMS energy) dynamically
+    rms_energy = np.mean(librosa.feature.rms(y=y))
+    normalized_loudness = rms_energy / (np.max(rms_energy) + 1e-6)  # Avoid division by zero
+    
+    # Extract pitch with a more robust method (filtering out noise)
+    pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+    valid_pitches = pitches[pitches > 0]
+    
+    if len(valid_pitches) > 0:
+        pitch_values = np.median(valid_pitches)  # Use median for stability
+    else:
+        pitch_values = 150  # Default neutral pitch
+    
+    print(f"DEBUG: Loudness={normalized_loudness:.4f}, Pitch={pitch_values:.2f}")  # Debugging Output
+    
+    return normalized_loudness, pitch_values
 
 def classify_intonation(loudness, pitch):
-    """ Classifies vocal tones based on loudness and pitch """
-    if loudness > 0.1 and pitch > 200:  # High loudness and high pitch
+    """ Classifies vocal tones more accurately, ensuring at least one label per sentence """
+    if loudness > 0.08 and pitch > 220:
         return "excited"
-    elif loudness > 0.1 and pitch <= 200:  # High loudness but low pitch
+    elif loudness > 0.08 and pitch <= 220:
         return "angry"
-    elif loudness <= 0.1 and pitch > 200:  # Low loudness but high pitch
+    elif loudness <= 0.08 and pitch > 220:
         return "happy"
-    elif loudness <= 0.1 and pitch <= 200:  # Low loudness and low pitch
-        return "calm"
     else:
-        return "emphasized"
+        return "calm"
 
 def transcribe_audio_live(audio_path, chunk_length_ms=2000):
-    """ Transcribes audio in real-time and sends live captions with vocal tone labels """
-    audio_path = convert_to_wav(audio_path)  # Convert to WAV if necessary
+    """ Transcribes audio in real-time with smarter intonation classification """
     use_fp16 = torch.cuda.is_available()
-
     print("🎤 Starting real-time transcription...")
-    caption_text = ""  # Maintain full captions
-
-    # Load audio file
+    caption_text = ""
+    
     audio = AudioSegment.from_file(audio_path)
-    chunks = make_chunks(audio, chunk_length_ms)  # Split audio into small chunks
-
+    chunks = make_chunks(audio, chunk_length_ms)
+    
     for i, chunk in enumerate(chunks):
         chunk_name = f"chunk{i}.wav"
-        chunk.export(chunk_name, format="wav")  # Export chunk to WAV
-
-        # Analyze loudness and pitch for the current chunk
+        chunk.export(chunk_name, format="wav")
+        
         loudness, pitch = analyze_audio(chunk)
         tone = classify_intonation(loudness, pitch)
-
-        # Transcribe the chunk
-        result = model.transcribe(chunk_name, fp16=use_fp16, word_timestamps=True)
         
-        # Process each segment in the chunk
+        result = model.transcribe(chunk_name, fp16=use_fp16, word_timestamps=True)
+        os.remove(chunk_name)
+        
         for segment in result["segments"]:
-            phrase = segment["text"]
-            if phrase.strip() == "":  # Skip empty phrases
+            phrase = segment["text"].strip()
+            if not phrase:
                 continue
-
-            phrase_with_tone = f"{phrase} ({tone})"  # Apply tone to the entire phrase
-
+            
+            # Guarantee at least one tone annotation per sentence
+            phrase_with_tone = f"{phrase} ({tone})"
             phrase_with_tone = apply_tooltip(phrase_with_tone)
-            caption_text += " " + phrase_with_tone  # Append phrase to captions
+            caption_text += " " + phrase_with_tone
             
             print(f"Updating Caption: {caption_text}")
-            socketio.emit("update_caption", {"word": caption_text})  # Send updated captions
-            eventlet.sleep(0.1)  # Simulates real-time streaming
-
-        # Clean up chunk file
-        os.remove(chunk_name)
+            socketio.emit("update_caption", {"word": caption_text})
+            eventlet.sleep(0.1)
 
 def apply_tooltip(phrase):
-    """ Adds hover tooltip with vocal tone explanation """
+    """ Adds hover tooltips only to meaningful intonations """
     explanations = {
-        "calm": "A smooth, steady tone with minimal fluctuations. Often used in reassuring or neutral speech.",
-        "excited": "A tone with rising pitch and energy. Indicates enthusiasm, eagerness, or high engagement.",
-        "angry": "A harsh, forceful tone. Indicates frustration, anger, or strong disagreement.",
-        "happy": "A bright, cheerful tone. Indicates joy, satisfaction, or positivity.",
-        "emphasized": "A louder or more forceful tone. Used to highlight important points or stress key information."
+        "calm": "A steady tone with minimal fluctuations. Used in neutral speech.",
+        "excited": "A tone with rising pitch and energy. Indicates high engagement.",
+        "angry": "A harsh, forceful tone. Indicates frustration or disagreement.",
+        "happy": "A bright, cheerful tone. Indicates joy or satisfaction."
     }
-
+    
     for tone, explanation in explanations.items():
         phrase = phrase.replace(
             f"({tone})",
@@ -136,15 +112,14 @@ def index():
 
 @socketio.on("connect")
 def handle_connect():
-    """ Debug WebSocket Connection """
     print("WebSocket Connected!")
 
 @socketio.on("start_transcription")
 def start_transcription():
-    """ Starts real-time captioning when the button is clicked """
-    print("Received Start Transcription Event!")  # Debug log
+    print("Received Start Transcription Event!")
     transcribe_audio_live("speech.mp3")
 
 if __name__ == "__main__":
     print("🚀 Starting Flask-SocketIO Server...")
     socketio.run(app, host="0.0.0.0", port=5001, debug=True, allow_unsafe_werkzeug=True)
+
