@@ -12,35 +12,61 @@
         #caption {
             font-size: 1.5em;
             margin-top: 20px;
+            line-height: 1.5; /* Improves readability */
+            white-space: pre-line; /* Ensures new lines are respected */
         }
         .tooltip {
-            position: relative;
-            display: inline-block;
-            border-bottom: 1px dotted black;
-        }
-        .tooltip .tooltiptext {
-            visibility: hidden;
-            width: 120px;
-            background-color: black;
-            color: #fff;
-            text-align: center;
-            border-radius: 6px;
-            padding: 5px;
-            position: absolute;
-            z-index: 1;
-            bottom: 125%;
-            left: 50%;
-            margin-left: -60px;
-            opacity: 0;
-            transition: opacity 0.3s;
-        }
-        .tooltip:hover .tooltiptext {
-            visibility: visible;
-            opacity: 1;
-        }
+    position: relative;
+    display: inline-block;
+    cursor: pointer;
+    /* text-decoration: underline; /* Underline to indicate interactivity */
+    font-weight: bold; /* Makes it stand out */
+}
 
+    .tooltip sup,
+    .tooltip sub {
+        color: #007bff; /* Blue for calm */
+    }
 
-        
+    .tooltip sup[title="Excited"] {
+        color: #ff9800; /* Orange for excited */
+    }
+
+    .tooltip sup[title="Angry"] {
+        color: #ff3d00; /* Red for angry */
+    }
+
+    .tooltip sup[title="Happy"] {
+        color: #4caf50; /* Green for happy */
+    }
+
+    .tooltip sub[title="Sad"] {
+        color: #9e9e9e; /* Gray for sad */
+    }
+
+    .tooltip .tooltiptext {
+        visibility: hidden;
+        width: 160px;
+        background-color: black;
+        color: #fff;
+        text-align: center;
+        border-radius: 6px;
+        padding: 5px;
+        position: absolute;
+        z-index: 1;
+        bottom: 150%;
+        left: 50%;
+        margin-left: -80px;
+        opacity: 0;
+        transition: opacity 0.3s;
+        font-size: 12px;
+    }
+
+    .tooltip:hover .tooltiptext {
+        visibility: visible;
+        opacity: 1;
+    }
+
     </style>
 </head>
 <body>
@@ -52,10 +78,37 @@
     <script>
         const socket = io();
 
+        function formatCaption(text) {
+    const words = text.split(" ");
+    let formattedText = "";
+    let line = [];
+    
+    for (let i = 0; i < words.length; i++) {
+        line.push(words[i]);
+        
+        // Check if we have 7-9 words OR if we reach sentence-ending punctuation
+        if (line.length >= 7 && (line.length >= 9 || /[.!?]/.test(words[i]))) {
+            formattedText += line.join(" ") + "<br>";  // Insert line break
+            line = [];  // Reset for next line
+        }
+    }
+
+    // Append any remaining words
+    if (line.length > 0) {
+        formattedText += line.join(" ");
+    }
+
+    return formattedText;
+}
+
+
+
         // Update captions in real-time
         socket.on("update_caption", function(data) {
-            document.getElementById("caption").innerHTML = data.word;
-        });
+    document.getElementById("caption").innerHTML = data.word;
+});
+
+
 
         // Start transcription when the button is clicked
         document.getElementById("startButton").addEventListener("click", function() {

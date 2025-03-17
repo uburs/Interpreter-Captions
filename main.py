@@ -9,6 +9,8 @@ from pydub.utils import make_chunks
 import numpy as np
 import librosa
 import os
+import html
+import re
 
 # Apply eventlet monkey patch for better WebSocket performance
 eventlet.monkey_patch()
@@ -29,82 +31,99 @@ def analyze_audio(audio_chunk):
     y, sr = librosa.load(chunk_name, sr=None)
     os.remove(chunk_name)
     
-    # Calculate loudness (RMS energy) dynamically
-    rms_energy = np.mean(librosa.feature.rms(y=y))
-    normalized_loudness = rms_energy / (np.max(rms_energy) + 1e-6)  # Avoid division by zero
+    # Calculate perceptual loudness
+    mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr)
+    loudness = librosa.perceptual_weighting(mel_spectrogram, librosa.mel_frequencies(n_mels=mel_spectrogram.shape[0]))
+    mean_loudness = np.mean(loudness)
     
-    # Extract pitch with a more robust method (filtering out noise)
-    pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-    valid_pitches = pitches[pitches > 0]
+    # Extract pitch using a more robust method
+    pitch_values = librosa.yin(y, fmin=80, fmax=400)
+    median_pitch = np.median(pitch_values)
     
-    if len(valid_pitches) > 0:
-        pitch_values = np.median(valid_pitches)  # Use median for stability
-    else:
-        pitch_values = 150  # Default neutral pitch
+    print(f"DEBUG: Loudness={mean_loudness:.4f}, Pitch={median_pitch:.2f}")  # Debugging Output
     
-    print(f"DEBUG: Loudness={normalized_loudness:.4f}, Pitch={pitch_values:.2f}")  # Debugging Output
-    
-    return normalized_loudness, pitch_values
+    return mean_loudness, median_pitch
 
 def classify_intonation(loudness, pitch):
-    """ Classifies vocal tones more accurately, ensuring at least one label per sentence """
-    if loudness > 0.08 and pitch > 220:
+    """ Classifies vocal tones more accurately with expanded categories """
+    if loudness > -20 and pitch > 250:
         return "excited"
-    elif loudness > 0.08 and pitch <= 220:
+    elif loudness > -20 and pitch <= 250:
         return "angry"
-    elif loudness <= 0.08 and pitch > 220:
+    elif loudness <= -20 and pitch > 250:
         return "happy"
+    elif loudness <= -30:
+        return "sad"
     else:
         return "calm"
 
 def transcribe_audio_live(audio_path, chunk_length_ms=2000):
-    """ Transcribes audio in real-time with smarter intonation classification """
+    """ Transcribes audio in real-time and ensures captions accumulate """
     use_fp16 = torch.cuda.is_available()
     print("🎤 Starting real-time transcription...")
-    caption_text = ""
-    
+    caption_text = ""  # Keep track of all transcribed words
+
     audio = AudioSegment.from_file(audio_path)
     chunks = make_chunks(audio, chunk_length_ms)
-    
+
     for i, chunk in enumerate(chunks):
         chunk_name = f"chunk{i}.wav"
         chunk.export(chunk_name, format="wav")
-        
+
         loudness, pitch = analyze_audio(chunk)
         tone = classify_intonation(loudness, pitch)
-        
+
         result = model.transcribe(chunk_name, fp16=use_fp16, word_timestamps=True)
         os.remove(chunk_name)
-        
+
         for segment in result["segments"]:
             phrase = segment["text"].strip()
             if not phrase:
                 continue
-            
-            # Guarantee at least one tone annotation per sentence
+
             phrase_with_tone = f"{phrase} ({tone})"
-            phrase_with_tone = apply_tooltip(phrase_with_tone)
-            caption_text += " " + phrase_with_tone
-            
+            formatted_caption = apply_tooltip(phrase_with_tone)
+            caption_text += " " + formatted_caption  # ✅ Append instead of overwriting
+
             print(f"Updating Caption: {caption_text}")
-            socketio.emit("update_caption", {"word": caption_text})
+            socketio.emit("update_caption", {"word": caption_text})  # ✅ Send full accumulated text
             eventlet.sleep(0.1)
 
+    # ✅ Save to output.html with full text
+    with open("output.html", "w", encoding="utf-8") as file:
+        file.write(f"""<html><head><title>Transcription Output</title>
+        <style>
+            .tooltip {{ position: relative; display: inline-block; border-bottom: 1px dotted black; }}
+            .tooltip .tooltiptext {{ visibility: hidden; width: 120px; background-color: black; 
+                color: #fff; text-align: center; border-radius: 6px; padding: 5px; position: absolute; 
+                z-index: 1; bottom: 125%; left: 50%; margin-left: -60px; opacity: 0; transition: opacity 0.3s; }}
+            .tooltip:hover .tooltiptext {{ visibility: visible; opacity: 1; }}
+        </style></head><body>""")
+        file.write(f"<h2>Transcription Output</h2><p>{caption_text}</p></body></html>")
+
+    print("✅ Transcription saved to output.html")
+
+
+
+
+
 def apply_tooltip(phrase):
-    """ Adds hover tooltips only to meaningful intonations """
-    explanations = {
-        "calm": "A steady tone with minimal fluctuations. Used in neutral speech.",
-        "excited": "A tone with rising pitch and energy. Indicates high engagement.",
-        "angry": "A harsh, forceful tone. Indicates frustration or disagreement.",
-        "happy": "A bright, cheerful tone. Indicates joy or satisfaction."
+    """ Replaces emotion labels with subscript/superscript markers wrapped in tooltips with colors """
+    markers = {
+        "calm": '<span class="tooltip"><sup title="Calm" style="color: #007bff;">C</sup><span class="tooltiptext">A steady tone with minimal fluctuations. Used in neutral speech.</span></span>',
+        "excited": '<span class="tooltip"><sup title="Excited" style="color: #ff9800;">E</sup><span class="tooltiptext">A tone with rising pitch and energy. Indicates high engagement.</span></span>',
+        "angry": '<span class="tooltip"><sup title="Angry" style="color: #ff3d00;">A</sup><span class="tooltiptext">A harsh, forceful tone. Indicates frustration or disagreement.</span></span>',
+        "happy": '<span class="tooltip"><sup title="Happy" style="color: #4caf50;">H</sup><span class="tooltiptext">A bright, cheerful tone. Indicates joy or satisfaction.</span></span>',
+        "sad": '<span class="tooltip"><sub title="Sad" style="color: #9e9e9e;">S</sub><span class="tooltiptext">A low-energy, monotone voice. Indicates sadness or disappointment.</span></span>'
     }
-    
-    for tone, explanation in explanations.items():
-        phrase = phrase.replace(
-            f"({tone})",
-            f'<span class="tooltip {tone}">({tone})<span class="tooltiptext">{explanation}</span></span>'
-        )
+
+    # Replace textual labels with corresponding subscript/superscript tooltip markers
+    for tone, marker in markers.items():
+        pattern = rf"\({tone}\)"  # Matches exact labels like (calm)
+        phrase = re.sub(pattern, marker, phrase)
+
     return phrase
+
 
 @app.route("/")
 def index():
@@ -122,4 +141,3 @@ def start_transcription():
 if __name__ == "__main__":
     print("🚀 Starting Flask-SocketIO Server...")
     socketio.run(app, host="0.0.0.0", port=5001, debug=True, allow_unsafe_werkzeug=True)
-
